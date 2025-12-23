@@ -70,11 +70,7 @@ def main():
         print("Usage: python3 scripts/generate_all_reports.py <input.xml>")
         sys.exit(1)
     xml = sys.argv[1]
-    base = Path(xml).stem
-
-
-    # 1. Extract invoices and grouped report (no CSVs)
-    # Find last date first (will be used for output folder)
+    # 1. Extract all invoices to XLSX (for all data)
     temp_xlsx = 'invoices.xlsx'
     temp_group_xlsx = 'grouped_by_truck.xlsx'
     run([
@@ -84,7 +80,7 @@ def main():
         '--group-xlsx', temp_group_xlsx,
     ], desc='Extracting invoices and grouped report (XLSX only)')
 
-    # 2. Find last date in invoices.xlsx
+    # 2. Find last date in invoices.xlsx for main output folder
     last_date = get_last_invoice_date(temp_xlsx)
     if not last_date:
         last_date = 'unknown_date'
@@ -107,7 +103,130 @@ def main():
         sys.executable, 'scripts/plot_pie_labor_parts.py', str(out_grouped_xlsx), '--out', str(outdir / 'labor_vs_parts_pie.png')
     ], desc='Generating pie chart (labor_vs_parts_pie.png)')
 
-    print(f"\nAll reports and charts generated in folder: {outdir}")
+    # 6. Generate reports for each month
+    print("\nGenerating reports for each month...")
+    from openpyxl import load_workbook, Workbook
+    from collections import defaultdict
+    import calendar
+    wb = load_workbook(out_invoices_xlsx, read_only=True)
+    ws = wb.active
+    headers = [str(cell.value).strip() if cell.value else '' for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    date_idx = headers.index('Date') if 'Date' in headers else None
+    if date_idx is None:
+        print('No Date column found in invoices.xlsx, skipping monthly reports.')
+        return
+    # Collect rows by year-month
+    rows_by_month = defaultdict(list)
+    for row in ws.iter_rows(min_row=2):
+        date_val = row[date_idx].value
+        if not date_val:
+            continue
+        # Try to parse date
+        from datetime import datetime
+        dt = None
+        for fmt in ('%m/%d/%Y', '%Y-%m-%d'):
+            try:
+                dt = datetime.strptime(str(date_val), fmt)
+                break
+            except Exception:
+                continue
+        if not dt:
+            continue
+        ym = dt.strftime('%Y-%m')
+        rows_by_month[ym].append([cell.value for cell in row])
+
+    for ym, rows in sorted(rows_by_month.items()):
+        month_dir = outdir / ym
+        month_dir.mkdir(exist_ok=True)
+        # Write invoices_month.xlsx
+        month_xlsx = month_dir / 'invoices.xlsx'
+        wb_month = Workbook()
+        ws_month = wb_month.active
+        ws_month.append(headers)
+        for r in rows:
+            ws_month.append(r)
+        wb_month.save(month_xlsx)
+        # Group by vehicle for this month
+        # Reuse extract_invoices.py group_by_vehicle logic
+        # We'll reconstruct dicts for group_by_vehicle
+        invoice_dicts = []
+        for r in rows:
+            d = {h: v for h, v in zip(headers, r)}
+            invoice_dicts.append(d)
+        # Use group_by_vehicle from extract_invoices.py
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("extract_invoices", str(Path('scripts/extract_invoices.py')))
+        ei = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ei)
+        grouped = ei.group_by_vehicle(invoice_dicts)
+        # Write grouped_by_truck.xlsx for this month
+        month_group_xlsx = month_dir / 'grouped_by_truck.xlsx'
+        ei.write_group_xlsx(grouped, month_group_xlsx)
+        # Generate charts for this month
+        run([
+            sys.executable, 'scripts/plot_grouped.py', str(month_group_xlsx), '--out', str(month_dir / 'grouped_totals.png')
+        ], desc=f'Generating bar chart for {ym}')
+        run([
+            sys.executable, 'scripts/plot_pie_labor_parts.py', str(month_group_xlsx), '--out', str(month_dir / 'labor_vs_parts_pie.png')
+        ], desc=f'Generating pie chart for {ym}')
+        print(f"Reports and charts for {ym} generated in {month_dir}")
+
+    # 7. Generate reports for each quarter
+    print("\nGenerating reports for each quarter...")
+    def get_quarter(dt):
+        return f"{dt.year}-Q{((dt.month-1)//3)+1}"
+    rows_by_quarter = defaultdict(list)
+    for row in ws.iter_rows(min_row=2):
+        date_val = row[date_idx].value
+        if not date_val:
+            continue
+        from datetime import datetime
+        dt = None
+        for fmt in ('%m/%d/%Y', '%Y-%m-%d'):
+            try:
+                dt = datetime.strptime(str(date_val), fmt)
+                break
+            except Exception:
+                continue
+        if not dt:
+            continue
+        qtr = get_quarter(dt)
+        rows_by_quarter[qtr].append([cell.value for cell in row])
+
+    for qtr, rows in sorted(rows_by_quarter.items()):
+        qtr_dir = outdir / qtr
+        qtr_dir.mkdir(exist_ok=True)
+        # Write invoices.xlsx for the quarter
+        qtr_xlsx = qtr_dir / 'invoices.xlsx'
+        wb_qtr = Workbook()
+        ws_qtr = wb_qtr.active
+        ws_qtr.append(headers)
+        for r in rows:
+            ws_qtr.append(r)
+        wb_qtr.save(qtr_xlsx)
+        # Group by vehicle for this quarter
+        invoice_dicts = []
+        for r in rows:
+            d = {h: v for h, v in zip(headers, r)}
+            invoice_dicts.append(d)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("extract_invoices", str(Path('scripts/extract_invoices.py')))
+        ei = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ei)
+        grouped = ei.group_by_vehicle(invoice_dicts)
+        # Write grouped_by_truck.xlsx for this quarter
+        qtr_group_xlsx = qtr_dir / 'grouped_by_truck.xlsx'
+        ei.write_group_xlsx(grouped, qtr_group_xlsx)
+        # Generate charts for this quarter
+        run([
+            sys.executable, 'scripts/plot_grouped.py', str(qtr_group_xlsx), '--out', str(qtr_dir / 'grouped_totals.png')
+        ], desc=f'Generating bar chart for {qtr}')
+        run([
+            sys.executable, 'scripts/plot_pie_labor_parts.py', str(qtr_group_xlsx), '--out', str(qtr_dir / 'labor_vs_parts_pie.png')
+        ], desc=f'Generating pie chart for {qtr}')
+        print(f"Reports and charts for {qtr} generated in {qtr_dir}")
+
+    print(f"\nAll reports and charts generated in folder: {outdir}\nAnd per-month and per-quarter reports in subfolders.")
 
 if __name__ == '__main__':
     main()
