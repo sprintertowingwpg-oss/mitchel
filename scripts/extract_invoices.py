@@ -1,3 +1,58 @@
+def group_by_owner(rows):
+    from collections import defaultdict
+    groups = defaultdict(lambda: {
+        'owner': '',
+        'quantity of invoices': 0,
+        'Parts': 0.0,
+        'Labor': 0.0,
+        'Discount': 0.0,
+        'Haz Mat': 0.0,
+        'Supplies': 0.0,
+        'Tax': 0.0,
+        'Total': 0.0,
+    })
+    for r in rows:
+        owner = (r.get('Owner') or '').strip() or 'Unknown'
+        g = groups[owner]
+        g['owner'] = owner
+        g['quantity of invoices'] += 1
+        g['Parts'] += float(r.get('Parts') or 0)
+        g['Labor'] += float(r.get('Labor') or 0)
+        g['Discount'] += float(r.get('Discount') or 0)
+        g['Haz Mat'] += float(r.get('Haz Mat') or 0)
+        g['Supplies'] += float(r.get('Supplies') or 0)
+        g['Tax'] += float(r.get('Tax') or 0)
+        g['Total'] += float(r.get('Total') or 0)
+    return [
+        {
+            'owner': g['owner'],
+            'quantity of invoices': g['quantity of invoices'],
+            'Parts': g['Parts'],
+            'Labor': g['Labor'],
+            'Discount': g['Discount'],
+            'Haz Mat': g['Haz Mat'],
+            'Supplies': g['Supplies'],
+            'Tax': g['Tax'],
+            'Total': g['Total'],
+        }
+        for g in groups.values()
+    ]
+
+def write_group_owner_xlsx(groups, out_xlsx):
+    try:
+        from openpyxl import Workbook
+    except Exception:
+        print('openpyxl not installed; skipping grouped XLSX write.')
+        return
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Grouped by Owner'
+    headers = ['owner', 'quantity of invoices', 'Parts', 'Labor', 'Discount', 'Haz Mat', 'Supplies', 'Tax', 'Total']
+    ws.append(headers)
+    for g in sorted(groups, key=lambda x: float(x.get('Total') or 0), reverse=True):
+        ws.append([g[h] for h in headers])
+    wb.save(out_xlsx)
+    print(f'Wrote grouped XLSX: {out_xlsx}')
 #!/usr/bin/env python3
 """Extract invoices from Crystal Reports XML to CSV and optionally XLSX.
 
@@ -85,9 +140,18 @@ def find_field_value(group_elem, field_name):
     return ''
 
 def extract(xml_path):
+    # Load vehicle nickname conversion table
+    import json
+    vehicle_info = {}
+    try:
+        with open('vehicles.json', 'r', encoding='utf-8') as vfh:
+            vehicle_info = json.load(vfh)
+    except Exception:
+        pass
     tree = ET.parse(xml_path)
     root = tree.getroot()
     parent_map = build_parent_map(root)
+
 
     rows = []
 
@@ -128,6 +192,26 @@ def extract(xml_path):
         tax_val = find_field_value(invoice_group, '{@TaxTotal}')
         total_val = find_field_value(invoice_group, '{@Total}')
 
+        # Flexible substring matching for vehicle_info
+        nickname = vehicle_value
+        owner = ''
+        found = False
+        search_fields = [vehicle_value, license, truck]
+        for field in search_fields:
+            field_lower = (field or '').lower()
+            for key, info in vehicle_info.items():
+                key_lower = key.lower()
+                if key_lower and field_lower and key_lower in field_lower:
+                    if isinstance(info, dict):
+                        nickname = info.get('nickname', vehicle_value)
+                        owner = info.get('owner', '')
+                    elif isinstance(info, str):
+                        nickname = info
+                        owner = ''
+                    found = True
+                    break
+            if found:
+                break
         rows.append({
             'Invoice': invoice_num,
             'Date': date,
@@ -141,7 +225,8 @@ def extract(xml_path):
             'Supplies': tofloat(supplies_val),
             'Tax': tofloat(tax_val),
             'Total': tofloat(total_val),
-            'Vehicle': vehicle_value,
+            'Vehicle': nickname,
+            'Owner': owner,
         })
 
     return rows
@@ -169,7 +254,7 @@ def _parse_date_key(datestr):
 def _parse_invoice_key(inv):
     if not inv:
         return 0
-    m = re.search(r'(\d+)', inv)
+    m = re.search(r'(\d+)', str(inv))
     if m:
         try:
             return int(m.group(1))
@@ -189,7 +274,7 @@ def write_csv(rows, out_csv):
         _parse_invoice_key(r.get('Invoice')),
     ))
 
-    headers = ['Invoice', 'Date', 'Truck', 'License', 'Unit', 'Parts', 'Labor', 'Discount', 'Haz Mat', 'Supplies', 'Tax', 'Total', 'Vehicle']
+    headers = ['Invoice', 'Date', 'Truck', 'License', 'Unit', 'Parts', 'Labor', 'Discount', 'Haz Mat', 'Supplies', 'Tax', 'Total', 'Vehicle', 'Owner']
     with open(out_csv, 'w', newline='', encoding='utf-8') as fh:
         w = csv.DictWriter(fh, fieldnames=headers)
         w.writeheader()
@@ -213,7 +298,7 @@ def write_xlsx(rows, out_xlsx):
         _parse_invoice_key(r.get('Invoice')),
     ))
 
-    headers = ['Invoice', 'Date', 'Truck', 'License', 'Unit', 'Parts', 'Labor', 'Discount', 'Haz Mat', 'Supplies', 'Tax', 'Total', 'Vehicle']
+    headers = ['Invoice', 'Date', 'Truck', 'License', 'Unit', 'Parts', 'Labor', 'Discount', 'Haz Mat', 'Supplies', 'Tax', 'Total', 'Vehicle', 'Owner']
     ws.append(headers)
     for r in rows:
         ws.append([r[h] for h in headers])

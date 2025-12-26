@@ -81,17 +81,25 @@ def read_grouped(path):
         wb = load_workbook(path, read_only=True)
         ws = wb.active
         headers = [str(cell.value).strip() if cell.value else '' for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-        vehicle_idx = headers.index('vehicle') if 'vehicle' in headers else None
-        total_idx = headers.index('Total') if 'Total' in headers else None
-        if vehicle_idx is None or total_idx is None:
+        # Support both vehicle and owner grouping
+        if 'vehicle' in headers:
+            label_idx = headers.index('vehicle')
+            title = 'vehicle'
+        elif 'owner' in headers:
+            label_idx = headers.index('owner')
+            title = 'owner'
+        else:
             raise SystemExit('Could not find required columns in XLSX.')
+        total_idx = headers.index('Total') if 'Total' in headers else None
+        if total_idx is None:
+            raise SystemExit('Could not find Total column in XLSX.')
         for row in ws.iter_rows(min_row=2):
-            vehicle = str(row[vehicle_idx].value).strip() if row[vehicle_idx].value else 'Unknown'
+            label = str(row[label_idx].value).strip() if row[label_idx].value else 'Unknown'
             try:
                 total = float(row[total_idx].value or 0)
             except Exception:
                 total = 0.0
-            rows.append((vehicle, total))
+            rows.append((label, total))
     else:
         with open(path, encoding='utf-8') as f:
             r = csv.DictReader(f)
